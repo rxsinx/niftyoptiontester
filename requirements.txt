@@ -10,6 +10,7 @@ streamlit-autorefresh>=1.0.1
 
 # Data fetching
 requests>=2.31.0
+twelvedata>=1.2.0
 
 # Optional: broker APIs for live execution
 # kiteconnect>=4.0.0
