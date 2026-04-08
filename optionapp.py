@@ -55,6 +55,11 @@ with st.sidebar:
     refresh_interval = st.slider("Refresh (seconds)", 5, 60, 15)
     count = st_autorefresh(interval=refresh_interval * 1000, limit=None, key="refresh")
 
+    st.divider()
+    st.subheader("🔑 API Keys")
+    twelve_data_key = st.text_input("Twelve Data API Key", type="password", value="")
+    st.caption("Get your free key at [twelvedata.com](https://twelvedata.com)")
+    
 # -----------------------------
 # Data Fetching Functions
 # -----------------------------
@@ -78,43 +83,117 @@ def fetch_spot_price(symbol):
 
 @st.cache_data(ttl=15)
 def fetch_option_chain(symbol):
-    """Fetch complete option chain from NSE API."""
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'}
+    import time
+import random
+
+@st.cache_data(ttl=15)
+def fetch_option_chain(symbol, api_key):
+    """Fetch option chain from Twelve Data API with fallback to simulated data."""
     
-    session = requests.Session()
-    session.get("https://www.nseindia.com", headers=headers)
-    response = session.get(url, headers=headers)
-    data = response.json()
+    if not api_key:
+        st.warning("Twelve Data API key not provided. Using simulated data.")
+        return generate_fallback_data(symbol)
     
-    records = data['records']['data']
-    spot = data['records']['underlyingValue']
+    # Map symbol to Twelve Data symbol format
+    symbol_map = {
+        "NIFTY": "NIFTY50",
+        "BANKNIFTY": "BANKNIFTY",
+        "FINNIFTY": "FINNIFTY",
+        "MIDCPNIFTY": "MIDCPNIFTY"
+    }
+    td_symbol = symbol_map.get(symbol, symbol)
     
-    # Parse into DataFrame
+    # Twelve Data options chain endpoint (requires 'expiration' and 'strike')
+    # For demo, we'll fetch a range of strikes around the current spot
+    # First, get the current spot price
+    spot_url = f"https://api.twelvedata.com/price?symbol={td_symbol}&apikey={api_key}"
+    try:
+        spot_resp = requests.get(spot_url, timeout=10)
+        spot_data = spot_resp.json()
+        spot = float(spot_data.get('price', 24500))
+    except Exception as e:
+        st.warning(f"Could not fetch spot: {e}. Using fallback spot.")
+        spot = 24500 if symbol == "NIFTY" else 52000
+    
+    # Generate strikes around spot (Twelve Data requires explicit strike list)
+    # We'll request each strike individually (rate limited) – better to use their batch endpoint
+    # For simplicity, we'll use a precomputed strike list and fetch each with a small delay.
+    strikes = list(range(int(spot) - 1000, int(spot) + 1001, 50))
     rows = []
-    for record in records:
-        strike = record['strikePrice']
-        expiry_date = record['expiryDate']
-        
-        # CE data
-        ce = record.get('CE', {})
-        pe = record.get('PE', {})
+    
+    # Get expiration dates first (assuming weekly expiries)
+    exp_url = f"https://api.twelvedata.com/options_expirations?symbol={td_symbol}&apikey={api_key}"
+    try:
+        exp_resp = requests.get(exp_url, timeout=10)
+        exp_data = exp_resp.json()
+        expirations = exp_data.get('data', [])[:1]  # use the nearest expiry
+        expiry_date = expirations[0] if expirations else (pd.Timestamp.now() + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+    except:
+        expiry_date = (pd.Timestamp.now() + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+    
+    # For each strike, fetch option data (this can be slow; consider batch API)
+    for strike in strikes:
+        try:
+            # Call option
+            call_url = f"https://api.twelvedata.com/option?symbol={td_symbol}&strike={strike}&expiration={expiry_date}&option_type=call&apikey={api_key}"
+            call_resp = requests.get(call_url, timeout=5)
+            call_data = call_resp.json()
+            
+            # Put option
+            put_url = f"https://api.twelvedata.com/option?symbol={td_symbol}&strike={strike}&expiration={expiry_date}&option_type=put&apikey={api_key}"
+            put_resp = requests.get(put_url, timeout=5)
+            put_data = put_resp.json()
+            
+            rows.append({
+                'strike': strike,
+                'expiry': expiry_date,
+                'ce_oi': call_data.get('open_interest', 0),
+                'ce_ltp': call_data.get('price', 0),
+                'ce_iv': call_data.get('implied_volatility', 0.2),
+                'ce_volume': call_data.get('volume', 0),
+                'pe_oi': put_data.get('open_interest', 0),
+                'pe_ltp': put_data.get('price', 0),
+                'pe_iv': put_data.get('implied_volatility', 0.2),
+                'pe_volume': put_data.get('volume', 0),
+            })
+            time.sleep(0.5)  # avoid rate limiting
+        except Exception as e:
+            # If one strike fails, continue with zeros
+            rows.append({
+                'strike': strike,
+                'expiry': expiry_date,
+                'ce_oi': 0, 'ce_ltp': 0, 'ce_iv': 0.2, 'ce_volume': 0,
+                'pe_oi': 0, 'pe_ltp': 0, 'pe_iv': 0.2, 'pe_volume': 0,
+            })
+    
+    df = pd.DataFrame(rows)
+    return df, spot
+
+def generate_fallback_data(symbol):
+    """Generate realistic simulated option chain (same as before)."""
+    spot = 24500 if symbol == "NIFTY" else 52000 if symbol == "BANKNIFTY" else 15000
+    strikes = list(range(int(spot) - 1000, int(spot) + 1001, 50))
+    rows = []
+    expiry_date = (pd.Timestamp.now() + pd.Timedelta(days=7)).strftime('%d-%b-%Y')
+    
+    for strike in strikes:
+        distance = abs(strike - spot) / spot
+        oi_factor = 1 / (distance + 0.1) + (1 if strike % 500 == 0 else 0)
+        ce_oi = int(100000 * oi_factor * random.uniform(0.8, 1.2))
+        pe_oi = int(100000 * oi_factor * random.uniform(0.8, 1.2))
+        iv = 12 + distance * 80
+        ce_iv = min(iv, 50) / 100
+        pe_iv = min(iv, 50) / 100
+        ce_ltp = max(0.05, abs(strike - spot) * 0.3 * random.uniform(0.5, 1.5))
+        pe_ltp = max(0.05, abs(strike - spot) * 0.3 * random.uniform(0.5, 1.5))
         
         rows.append({
             'strike': strike,
             'expiry': expiry_date,
-            'ce_oi': ce.get('openInterest', 0),
-            'ce_ltp': ce.get('lastPrice', 0),
-            'ce_iv': ce.get('impliedVolatility', 0),
-            'ce_volume': ce.get('totalTradedVolume', 0),
-            'pe_oi': pe.get('openInterest', 0),
-            'pe_ltp': pe.get('lastPrice', 0),
-            'pe_iv': pe.get('impliedVolatility', 0),
-            'pe_volume': pe.get('totalTradedVolume', 0),
+            'ce_oi': ce_oi, 'ce_ltp': ce_ltp, 'ce_iv': ce_iv, 'ce_volume': int(ce_oi * 0.1),
+            'pe_oi': pe_oi, 'pe_ltp': pe_ltp, 'pe_iv': pe_iv, 'pe_volume': int(pe_oi * 0.1),
         })
-    
-    df = pd.DataFrame(rows)
-    return df, spot
+    return pd.DataFrame(rows), spot
 
 # -----------------------------
 # Greeks Calculation
@@ -313,7 +392,7 @@ def plot_greeks_heatmap(df):
 def main():
     # Fetch data
     with st.spinner("Fetching live market data..."):
-        df, spot = fetch_option_chain(instrument)
+        df, spot = fetch_option_chain(instrument, twelve_data_key)
     
     # Calculate days to expiry (using first expiry date)
     if len(df) > 0:
