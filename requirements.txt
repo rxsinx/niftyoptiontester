@@ -1,0 +1,23 @@
+# Core data handling
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Web framework & UI
+streamlit>=1.28.0
+plotly>=5.17.0
+streamlit-autorefresh>=1.0.1
+
+# Data fetching
+requests>=2.31.0
+
+# Optional: broker APIs for live execution
+# kiteconnect>=4.0.0
+# fyers-api>=2.0.0
+# upstox-python>=2.0.0
+
+# Optional: NSE data library
+# nsefin>=0.1.0
+
+# For database persistence (optional)
+# sqlite3 is built-in
